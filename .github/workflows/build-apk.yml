@@ -33,5 +33,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cp app/build/outputs/apk/debug/app-debug.apk BikerVoice.apk
-          gh release view v0.1.2 >/dev/null 2>&1 || gh release create v0.1.2 --title "BikerVoice 0.1.2" --notes "Native Android microphone capture and detailed errors"
-          gh release upload v0.1.2 BikerVoice.apk --clobber
+          gh release view v0.1.3 >/dev/null 2>&1 || gh release create v0.1.3 --title "BikerVoice 0.1.3" --notes "Automatic sentence-based expressions, selectable Russian voices and native microphone"
+          gh release upload v0.1.3 BikerVoice.apk --clobber
