@@ -68,25 +68,69 @@ public class MainActivity extends Activity {
   String selected=ttsReady&&tts!=null&&tts.getVoice()!=null?tts.getVoice().getName():"";
   js("nativeVoices("+list.toString()+","+JSONObject.quote(selected)+")");
  }
+ private static final String GPT_KEY_ALIAS="BikerVoiceGatewayTokenV1";
+ private static final String DEFAULT_ENDPOINT="https://bicker-voice.onrender.com/chat";
+ private javax.crypto.SecretKey gatewayKey() throws Exception {
+  java.security.KeyStore ks=java.security.KeyStore.getInstance("AndroidKeyStore");ks.load(null);
+  java.security.Key existing=ks.getKey(GPT_KEY_ALIAS,null);
+  if(existing instanceof javax.crypto.SecretKey)return (javax.crypto.SecretKey)existing;
+  javax.crypto.KeyGenerator kg=javax.crypto.KeyGenerator.getInstance("AES","AndroidKeyStore");
+  kg.init(new android.security.keystore.KeyGenParameterSpec.Builder(GPT_KEY_ALIAS,android.security.keystore.KeyProperties.PURPOSE_ENCRYPT|android.security.keystore.KeyProperties.PURPOSE_DECRYPT).setBlockModes(android.security.keystore.KeyProperties.BLOCK_MODE_GCM).setEncryptionPaddings(android.security.keystore.KeyProperties.ENCRYPTION_PADDING_NONE).setKeySize(256).build());
+  return kg.generateKey();
+ }
+ private static void validateGateway(String endpoint,String token) throws Exception {
+  URL url=new URL(endpoint);
+  if(!"https".equalsIgnoreCase(url.getProtocol())||url.getUserInfo()!=null||url.getHost().isEmpty()||!"/chat".equals(url.getPath())||url.getQuery()!=null||url.getRef()!=null)throw new IllegalArgumentException("Нужен HTTPS-адрес с /chat");
+  if(token.length()<24||token.length()>512||!token.matches("[!-~]+"))throw new IllegalArgumentException("Некорректный токен сервера");
+ }
  public class VoiceBridge {
+  @JavascriptInterface public synchronized String saveGptSettings(String endpoint,String token){
+   try{
+    validateGateway(endpoint,token);
+    android.content.SharedPreferences prefs=getPreferences(MODE_PRIVATE);
+    javax.crypto.Cipher cipher=javax.crypto.Cipher.getInstance("AES/GCM/NoPadding");
+    cipher.init(javax.crypto.Cipher.ENCRYPT_MODE,gatewayKey());
+    cipher.updateAAD(endpoint.getBytes(StandardCharsets.UTF_8));
+    String encrypted=android.util.Base64.encodeToString(cipher.doFinal(token.getBytes(StandardCharsets.UTF_8)),android.util.Base64.NO_WRAP);
+    String iv=android.util.Base64.encodeToString(cipher.getIV(),android.util.Base64.NO_WRAP);
+    if(!prefs.edit().putString("gatewayEndpoint",endpoint).putString("gatewayCipher",encrypted).putString("gatewayIv",iv).commit())return "Не удалось записать настройки";
+    return "";
+   }catch(IllegalArgumentException e){return e.getMessage();}catch(Exception e){return "Не удалось зашифровать настройки на устройстве";}
+  }
+  @JavascriptInterface public synchronized String loadGptSettings(){
+   JSONObject result=new JSONObject();
+   try{
+    android.content.SharedPreferences prefs=getPreferences(MODE_PRIVATE);
+    String endpoint=prefs.getString("gatewayEndpoint",DEFAULT_ENDPOINT);
+    result.put("endpoint",endpoint);result.put("token","");
+    String encrypted=prefs.getString("gatewayCipher","");
+    if(!encrypted.isEmpty()){
+     javax.crypto.Cipher cipher=javax.crypto.Cipher.getInstance("AES/GCM/NoPadding");
+     cipher.init(javax.crypto.Cipher.DECRYPT_MODE,gatewayKey(),new javax.crypto.spec.GCMParameterSpec(128,android.util.Base64.decode(prefs.getString("gatewayIv",""),android.util.Base64.NO_WRAP)));
+     cipher.updateAAD(endpoint.getBytes(StandardCharsets.UTF_8));
+     result.put("token",new String(cipher.doFinal(android.util.Base64.decode(encrypted,android.util.Base64.NO_WRAP)),StandardCharsets.UTF_8));
+    }
+   }catch(Exception e){try{result.put("error","Не удалось восстановить токен. Введи его заново.");}catch(org.json.JSONException ignored){}}
+   return result.toString();
+  }
   @JavascriptInterface public void askGpt(int seq,String endpoint,String token,String messages){runOnUiThread(()->{
    if(destroyed)return;final int generation=++gptGeneration;
    new Thread(()->{
     HttpsURLConnection conn=null;
     try{
      URL url=new URL(endpoint);
-     if(!"https".equalsIgnoreCase(url.getProtocol())||url.getUserInfo()!=null||url.getHost().isEmpty())throw new IllegalArgumentException("Нужен HTTPS-адрес сервера");
-     if(token.isEmpty()||token.length()>512||messages.length()>24000)throw new IllegalArgumentException("Некорректные настройки или слишком длинный запрос");
-     conn=(HttpsURLConnection)url.openConnection();conn.setInstanceFollowRedirects(false);conn.setConnectTimeout(15000);conn.setReadTimeout(60000);conn.setRequestMethod("POST");conn.setDoOutput(true);
+     validateGateway(endpoint,token);
+     if(messages.length()>24000)throw new IllegalArgumentException("Слишком длинный запрос");
+     conn=(HttpsURLConnection)url.openConnection();conn.setInstanceFollowRedirects(false);conn.setConnectTimeout(15000);conn.setReadTimeout(100000);conn.setRequestMethod("POST");conn.setDoOutput(true);
      conn.setRequestProperty("Authorization","Bearer "+token);conn.setRequestProperty("Content-Type","application/json; charset=utf-8");
      JSONObject payload=new JSONObject();payload.put("messages",new JSONArray(messages));
      try(java.io.OutputStream out=conn.getOutputStream()){out.write(payload.toString().getBytes(StandardCharsets.UTF_8));}
-     int status=conn.getResponseCode();if(status!=200)throw new IllegalStateException("Сервер GPT: HTTP "+status);
+     int status=conn.getResponseCode();if(status!=200){String detail=status==401?"Токен не совпадает с BIKER_ACCESS_TOKEN в Render":status==404?"Проверь адрес /chat":status==429?"Лимит запросов или API":status==502?"Сервер не получил ответ от OpenAI. Проверь API-ключ, оплату и доступ к модели":status==503?"Сервер запускается. Повтори через минуту":"Ошибка сервера";throw new IllegalStateException("HTTP "+status+": "+detail);}
      ByteArrayOutputStream buffer=new ByteArrayOutputStream();try(InputStream in=conn.getInputStream()){byte[] bytes=new byte[4096];int n;while((n=in.read(bytes))!=-1){if(buffer.size()+n>65536)throw new IllegalStateException("Ответ слишком большой");buffer.write(bytes,0,n);}}
      String reply=new JSONObject(new String(buffer.toByteArray(),StandardCharsets.UTF_8)).getString("reply");
      if(reply.trim().isEmpty())throw new IllegalStateException("Пустой ответ GPT");
      runOnUiThread(()->{if(!destroyed&&generation==gptGeneration)js("nativeGptReply("+seq+","+JSONObject.quote(reply)+")");});
-    }catch(Exception e){String message=e instanceof IllegalStateException||e instanceof IllegalArgumentException?e.getMessage():"Не удалось связаться с сервером GPT";runOnUiThread(()->{if(!destroyed&&generation==gptGeneration)js("nativeGptError("+seq+","+JSONObject.quote(message)+")");});}
+    }catch(Exception e){String message=e instanceof IllegalStateException||e instanceof IllegalArgumentException?e.getMessage():e instanceof java.net.SocketTimeoutException?"Сервер не ответил вовремя. Повтори запрос":e instanceof java.net.UnknownHostException?"Не найден адрес сервера. Проверь интернет и URL":e instanceof javax.net.ssl.SSLException?"Ошибка защищённого HTTPS-соединения":"Не удалось связаться с сервером GPT";runOnUiThread(()->{if(!destroyed&&generation==gptGeneration)js("nativeGptError("+seq+","+JSONObject.quote(message)+")");});}
     finally{if(conn!=null)conn.disconnect();}
    },"Biker-GPT").start();
   });}

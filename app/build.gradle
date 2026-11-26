@@ -5,7 +5,7 @@ plugins { id 'com.android.application' }
 android {
  namespace 'com.anderza.bikervoice'
  compileSdk 35
- defaultConfig { applicationId 'com.anderza.bikervoice'; minSdk 26; targetSdk 34; versionCode 5; versionName '0.1.4' }
+ defaultConfig { applicationId 'com.anderza.bikervoice'; minSdk 26; targetSdk 34; versionCode 6; versionName '0.1.5' }
  sourceSets { main { res.srcDir layout.buildDirectory.dir('generated/bikerIcon') } }
 }
 def iconDir = layout.buildDirectory.dir('generated/bikerIcon')

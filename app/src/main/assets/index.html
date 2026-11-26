@@ -2,7 +2,7 @@
 <html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>BikerVoice</title>
 <style>
 *{box-sizing:border-box}body{margin:0;min-height:100vh;min-height:100dvh;background:#10131c;color:#fff;font:16px system-ui;display:flex;flex-direction:column;align-items:center;justify-content:space-evenly;padding:16px;gap:12px}h1{font-size:23px;margin:0}canvas{width:min(88vw,390px,52vh);height:auto;aspect-ratio:1;display:block;border-radius:50%;background:#e9e5e5;box-shadow:0 8px 35px #0008;border:3px solid #495061}.panel{text-align:center;width:min(100%,450px)}input{width:100%;padding:14px;border-radius:12px;background:#242b38;color:#fff;border:1px solid #667;font:inherit}button{padding:12px;border-radius:10px;border:0;background:#f7a332;color:#181818;font-weight:bold;margin:7px 2px}#status{color:#ffc071;margin:8px}p{font-size:12px;color:#aab;margin:8px}.voice{display:flex;align-items:center;gap:8px;margin:10px 0}.voice select{min-width:0;flex:1;background:#242b38;color:white;border:1px solid #667;border-radius:10px;padding:10px;font:inherit}#micMeter{height:4px;background:#303848;border-radius:2px;overflow:hidden}#micMeter span{display:block;height:100%;background:#f7a332;width:0}
-</style></head><body><h1>🏍️ BikerVoice</h1><canvas id="avatar" width="480" height="480" aria-label="Байкер"></canvas><div class="panel"><div id="status" role="status">Загрузка карточки…</div><input id="phrase" placeholder="Спроси байкера…"><div><button id="speak">💬 Спросить GPT</button><button id="listen">🎙️ Слушать</button><button id="stop">■ Стоп</button></div><div id="micMeter"><span></span></div><div class="voice"><label for="voice">Голос</label><select id="voice"><option>Загрузка…</option></select><button id="sample">▶</button></div><div id="answer" style="white-space:pre-wrap;max-height:18vh;overflow:auto;text-align:left" aria-live="polite"></div><details><summary>⚙ Подключение GPT-5</summary><input id="endpoint" type="url" placeholder="https://сервер/chat" autocomplete="off"><input id="token" type="password" placeholder="Токен своего сервера (не ключ OpenAI)" autocomplete="off"><button id="resetChat">Новый разговор</button><p>Речь распознаётся сервисом Android; текст передаётся серверу и OpenAI. Токен хранится только в текущем сеансе.</p></details></div>
+</style></head><body><h1>🏍️ BikerVoice</h1><canvas id="avatar" width="480" height="480" aria-label="Байкер"></canvas><div class="panel"><div id="status" role="status">Загрузка карточки…</div><input id="phrase" placeholder="Спроси байкера…"><div><button id="speak">💬 Спросить GPT</button><button id="listen">🎙️ Слушать</button><button id="stop">■ Стоп</button></div><div id="micMeter"><span></span></div><div class="voice"><label for="voice">Голос</label><select id="voice"><option>Загрузка…</option></select><button id="sample">▶</button></div><div id="answer" style="white-space:pre-wrap;max-height:18vh;overflow:auto;text-align:left" aria-live="polite"></div><details><summary>⚙ Подключение GPT-5</summary><label for="endpoint">HTTPS-адрес сервера</label><input id="endpoint" type="url" placeholder="https://сервер/chat" autocomplete="off" autocapitalize="none" spellcheck="false"><label for="token">Токен BIKER_ACCESS_TOKEN</label><input id="token" type="password" placeholder="Токен Render, не ключ OpenAI" autocomplete="off" autocapitalize="none" spellcheck="false"><label style="display:block;margin:8px"><input id="showToken" type="checkbox" style="width:auto"> Показать токен</label><button id="saveSettings">Сохранить настройки</button><button id="testConnection">Проверить соединение</button><button id="resetChat">Новый разговор</button><div id="settingsStatus" role="status" style="color:#ffc071"></div><p>Токен шифруется на устройстве. Проверка отправляет короткий запрос GPT. Речь распознаётся Android, текст передаётся серверу и OpenAI.</p></details></div>
 <script>
 const s=document.getElementById('status'),canvas=document.getElementById('avatar'),g=canvas.getContext('2d'),sheet=new Image();
 const rects=[[466,10,266,320],[740,10,266,320],[1008,10,260,320],[1269,10,251,320],[466,340,266,320],[740,340,266,320],[1008,340,260,320],[1269,340,251,320]];
@@ -32,25 +32,47 @@ function nativeMicStarted(session){if(session!==micSession)return;micActive=true
 async function stopMic(){micSession++;if(window.AndroidVoice&&typeof AndroidVoice.stopMic==='function')AndroidVoice.stopMic();cancelAnimationFrame(frame);if(stream)stream.getTracks().forEach(t=>t.stop());stream=null;if(ctx)await ctx.close();ctx=null;micActive=false;level=0}
 async function speakText(t){await stopMic();prepareSpeech(t);if(window.AndroidVoice){AndroidVoice.speak(t)}else if('speechSynthesis'in window){speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(t);u.lang='ru-RU';u.onstart=nativeSpeechStart;u.onboundary=e=>nativeSpeechRange(e.charIndex);u.onend=nativeSpeechEnd;u.onerror=nativeSpeechEnd;speechSynthesis.speak(u)}else{s.textContent='Озвучка недоступна'}}
 const endpoint=document.getElementById('endpoint'),token=document.getElementById('token'),phrase=document.getElementById('phrase'),answer=document.getElementById('answer');
-let history=[],requestSeq=0;
-try{endpoint.value=localStorage.getItem('bikerEndpoint')||''}catch(e){}
-endpoint.onchange=()=>{requestSeq++;history=[];try{localStorage.setItem('bikerEndpoint',endpoint.value.trim())}catch(e){}};
-token.onchange=()=>{requestSeq++;history=[]};
-document.getElementById('resetChat').onclick=()=>{requestSeq++;history=[];answer.textContent='';s.textContent='Новый разговор'};
-let pendingQuestion='';
-async function ask(text){
- text=text.trim();if(!text)return;
+let history=[],requestSeq=0,pendingQuestion='',pendingTest=false;
+const settingsStatus=document.getElementById('settingsStatus'),defaultEndpoint='https://bicker-voice.onrender.com/chat';
+function report(message){s.textContent=message;settingsStatus.textContent=message}
+endpoint.value=defaultEndpoint;
+try{if(window.AndroidVoice&&AndroidVoice.loadGptSettings){const saved=JSON.parse(AndroidVoice.loadGptSettings());endpoint.value=saved.endpoint||defaultEndpoint;token.value=saved.token||'';if(saved.error)report(saved.error)}}catch(e){report('Не удалось загрузить настройки')}
+function readSettings(){
+ const address=endpoint.value.trim(),secret=token.value.trim();
+ if(!address){report('Введите HTTPS-адрес сервера');return null}
+ let url;try{url=new URL(address)}catch(e){report('Неверный адрес. Начните с https://');return null}
+ if(url.protocol!=='https:'||url.username||url.password||url.search||url.hash){report('Нужен HTTPS-адрес без пароля, параметров и фрагментов');return null}
+ if(url.pathname==='/'||url.pathname==='/chat/')url.pathname='/chat';
+ if(url.pathname!=='/chat'){report('Адрес должен заканчиваться на /chat');return null}
+ if(!secret){report('Введите BIKER_ACCESS_TOKEN из Render');return null}
+ if(secret.length<24||secret.length>512||!/^[!-~]+$/.test(secret)){report('Токен: 24–512 символов латиницы, цифр или знаков, без пробелов');return null}
+ endpoint.value=url.href;token.value=secret;return {endpoint:url.href,token:secret};
+}
+function saveSettings(){
+ const cfg=readSettings();if(!cfg)return null;
+ if(!window.AndroidVoice||!AndroidVoice.saveGptSettings){report('Сохранение доступно в Android-приложении');return null}
+ try{const error=AndroidVoice.saveGptSettings(cfg.endpoint,cfg.token);if(error){report(error);return null}}catch(e){report('Не удалось сохранить настройки');return null}
+ return cfg;
+}
+document.getElementById('showToken').onchange=e=>{token.type=e.target.checked?'text':'password'};
+endpoint.oninput=token.oninput=()=>{requestSeq++;history=[];settingsStatus.textContent='Настройки изменены'};
+document.getElementById('saveSettings').onclick=()=>{if(saveSettings())report('Настройки сохранены')};
+document.getElementById('resetChat').onclick=()=>{requestSeq++;history=[];answer.textContent='';s.textContent='Новый разговор. Нажми «Слушать» или задай вопрос.'};
+document.getElementById('testConnection').onclick=()=>ask('Ответь только: На связи!',true);
+async function ask(text,test=false){
+ text=text.trim();if(!text){report('Введите вопрос');return}
+ const cfg=saveSettings();if(!cfg)return;
  const seq=++requestSeq;await stopMic();if(seq!==requestSeq)return;
  if(window.AndroidVoice)AndroidVoice.stop();
  speaking=false;
- if(!endpoint.value.trim().startsWith('https://')||!token.value.trim()){s.textContent='Укажи HTTPS-адрес и токен сервера в настройках GPT';return;}
- if(!window.AndroidVoice||!AndroidVoice.askGpt){s.textContent='GPT доступен в Android-приложении';return;}
- const messages=history.concat({role:'user',content:text}).slice(-12);
- pendingQuestion=text;s.textContent='Байкер думает…';answer.textContent=text;
- AndroidVoice.askGpt(seq,endpoint.value.trim(),token.value.trim(),JSON.stringify(messages));
+ if(!window.AndroidVoice||!AndroidVoice.askGpt){report('GPT доступен в Android-приложении');return}
+ const messages=test?[{role:'user',content:text}]:history.concat({role:'user',content:text}).slice(-12);
+ pendingQuestion=text;pendingTest=test;report(test?'Проверяю сервер и GPT…':'Байкер думает…');
+ if(!test)answer.textContent=text;
+ try{AndroidVoice.askGpt(seq,cfg.endpoint,cfg.token,JSON.stringify(messages))}catch(e){report('Не удалось отправить запрос')}
 }
-function nativeGptReply(seq,reply){if(seq!==requestSeq)return;history=history.concat({role:'user',content:pendingQuestion},{role:'assistant',content:reply}).slice(-12);answer.textContent=reply;speakText(reply)}
-function nativeGptError(seq,message){if(seq===requestSeq)s.textContent=message}
+function nativeGptReply(seq,reply){if(seq!==requestSeq)return;if(pendingTest){report('Соединение с GPT работает');answer.textContent=reply;return}history=history.concat({role:'user',content:pendingQuestion},{role:'assistant',content:reply}).slice(-12);answer.textContent=reply;settingsStatus.textContent='Соединение с GPT работает';speakText(reply)}
+function nativeGptError(seq,message){if(seq===requestSeq)report(message)}
 function nativeRecognized(session,text){if(session!==micSession)return;micActive=false;level=0;phrase.value=text;ask(text)}
 document.getElementById('speak').onclick=()=>ask(phrase.value);document.getElementById('sample').onclick=()=>{requestSeq++;speakText('Здорово! Ну что, погнали?')};
 document.getElementById('listen').onclick=async()=>{requestSeq++;if(window.AndroidVoice)AndroidVoice.stop();else if('speechSynthesis'in window)speechSynthesis.cancel();speaking=false;await stopMic();if(window.AndroidVoice&&typeof AndroidVoice.startMic==='function'){s.textContent='Подключаю микрофон…';AndroidVoice.startMic(micSession);return;}try{stream=await navigator.mediaDevices.getUserMedia({audio:true});ctx=new (window.AudioContext||window.webkitAudioContext)();await ctx.resume();analyser=ctx.createAnalyser();analyser.fftSize=512;ctx.createMediaStreamSource(stream).connect(analyser);let data=new Uint8Array(512);micActive=true;s.textContent='Слушаю';function tick(){analyser.getByteTimeDomainData(data);let sum=0;for(let v of data)sum+=((v-128)/128)**2;level=Math.sqrt(sum/512);frame=requestAnimationFrame(tick)}tick()}catch(e){await stopMic();s.textContent='Микрофон: '+(e.message||e.name||'неизвестная ошибка')}};
