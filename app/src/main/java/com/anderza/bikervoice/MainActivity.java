@@ -5,7 +5,15 @@ import android.app.Activity;
 import android.os.Bundle;
 import android.os.SystemClock;
 import android.content.pm.PackageManager;
-import android.media.AudioRecord;
+import android.speech.SpeechRecognizer;
+import android.speech.RecognitionListener;
+import android.speech.RecognizerIntent;
+import android.content.Intent;
+import java.net.URL;
+import javax.net.ssl.HttpsURLConnection;
+import java.nio.charset.StandardCharsets;
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 import android.media.AudioFormat;
 import android.media.MediaRecorder;
 import android.speech.tts.TextToSpeech;
@@ -23,7 +31,8 @@ public class MainActivity extends Activity {
  private TextToSpeech tts;
  private boolean ttsReady=false, destroyed=false, waitingPermission=false, wantMic=false;
  private int micSession=0, speechSession=0;
- private MicCapture capture;
+ private SpeechRecognizer recognizer;
+ private volatile int gptGeneration=0;
  private void js(String code){ if(!destroyed && web!=null) web.evaluateJavascript(code,null); }
  private void micError(int session,String message){ if(session==micSession)js("nativeMicError("+session+","+JSONObject.quote(message)+")"); }
  @Override public void onCreate(Bundle b){
@@ -33,7 +42,9 @@ public class MainActivity extends Activity {
   web.getSettings().setDomStorageEnabled(true);
   web.getSettings().setMediaPlaybackRequiresUserGesture(false);
   web.addJavascriptInterface(new VoiceBridge(),"AndroidVoice");
-  web.setWebViewClient(new WebViewClient());
+  web.getSettings().setAllowFileAccess(false);
+  web.getSettings().setAllowContentAccess(false);
+  web.setWebViewClient(new WebViewClient(){@Override public boolean shouldOverrideUrlLoading(WebView v,WebResourceRequest r){return true;}});
   tts=new TextToSpeech(this,status->runOnUiThread(()->{
    if(destroyed||tts==null)return;
    ttsReady=status==TextToSpeech.SUCCESS;
@@ -58,6 +69,27 @@ public class MainActivity extends Activity {
   js("nativeVoices("+list.toString()+","+JSONObject.quote(selected)+")");
  }
  public class VoiceBridge {
+  @JavascriptInterface public void askGpt(int seq,String endpoint,String token,String messages){runOnUiThread(()->{
+   if(destroyed)return;final int generation=++gptGeneration;
+   new Thread(()->{
+    HttpsURLConnection conn=null;
+    try{
+     URL url=new URL(endpoint);
+     if(!"https".equalsIgnoreCase(url.getProtocol())||url.getUserInfo()!=null||url.getHost().isEmpty())throw new IllegalArgumentException("Нужен HTTPS-адрес сервера");
+     if(token.isEmpty()||token.length()>512||messages.length()>24000)throw new IllegalArgumentException("Некорректные настройки или слишком длинный запрос");
+     conn=(HttpsURLConnection)url.openConnection();conn.setInstanceFollowRedirects(false);conn.setConnectTimeout(15000);conn.setReadTimeout(60000);conn.setRequestMethod("POST");conn.setDoOutput(true);
+     conn.setRequestProperty("Authorization","Bearer "+token);conn.setRequestProperty("Content-Type","application/json; charset=utf-8");
+     JSONObject payload=new JSONObject();payload.put("messages",new JSONArray(messages));
+     try(java.io.OutputStream out=conn.getOutputStream()){out.write(payload.toString().getBytes(StandardCharsets.UTF_8));}
+     int status=conn.getResponseCode();if(status!=200)throw new IllegalStateException("Сервер GPT: HTTP "+status);
+     ByteArrayOutputStream buffer=new ByteArrayOutputStream();try(InputStream in=conn.getInputStream()){byte[] bytes=new byte[4096];int n;while((n=in.read(bytes))!=-1){if(buffer.size()+n>65536)throw new IllegalStateException("Ответ слишком большой");buffer.write(bytes,0,n);}}
+     String reply=new JSONObject(new String(buffer.toByteArray(),StandardCharsets.UTF_8)).getString("reply");
+     if(reply.trim().isEmpty())throw new IllegalStateException("Пустой ответ GPT");
+     runOnUiThread(()->{if(!destroyed&&generation==gptGeneration)js("nativeGptReply("+seq+","+JSONObject.quote(reply)+")");});
+    }catch(Exception e){String message=e instanceof IllegalStateException||e instanceof IllegalArgumentException?e.getMessage():"Не удалось связаться с сервером GPT";runOnUiThread(()->{if(!destroyed&&generation==gptGeneration)js("nativeGptError("+seq+","+JSONObject.quote(message)+")");});}
+    finally{if(conn!=null)conn.disconnect();}
+   },"Biker-GPT").start();
+  });}
   @JavascriptInterface public void listVoices(){runOnUiThread(()->sendVoices());}
   @JavascriptInterface public void selectVoice(String id){runOnUiThread(()->{
    if(!ttsReady||tts==null||tts.getVoices()==null)return;
@@ -87,67 +119,31 @@ public class MainActivity extends Activity {
    });
    if(tts.speak(text,TextToSpeech.QUEUE_FLUSH,null,"biker-"+session)==TextToSpeech.ERROR)js("nativeSpeechError('Ошибка синтеза речи')");
   });}
-  @JavascriptInterface public void stop(){runOnUiThread(()->{wantMic=false;stopCapture();stopSpeech();});}
+  @JavascriptInterface public void stop(){runOnUiThread(()->{gptGeneration++;wantMic=false;stopCapture();stopSpeech();});}
  }
  private void stopSpeech(){speechSession++;if(tts!=null)tts.stop();}
- private void stopCapture(){MicCapture c=capture;capture=null;if(c!=null)c.close();}
- private void startCapture(){
-  if(!wantMic||destroyed)return;
-  stopCapture();
-  MicCapture c=new MicCapture(micSession);
-  capture=c;
-  new Thread(c,"BikerVoice-Mic").start();
+ private void stopCapture(){
+  SpeechRecognizer old=recognizer;recognizer=null;if(old!=null){old.cancel();old.destroy();}
  }
- private final class MicCapture implements Runnable {
-  final int session;
-  volatile boolean running=true;
-  private AudioRecord recorder;
-  MicCapture(int session){this.session=session;}
-  synchronized void close(){running=false;if(recorder!=null){try{recorder.stop();}catch(IllegalStateException ignored){}}}
-  synchronized boolean open(int source,int rate,int size){
-   if(!running)return false;
-   AudioRecord candidate=null;
-   try{
-    candidate=new AudioRecord(source,rate,AudioFormat.CHANNEL_IN_MONO,AudioFormat.ENCODING_PCM_16BIT,size);
-    if(candidate.getState()!=AudioRecord.STATE_INITIALIZED){candidate.release();return false;}
-    candidate.startRecording();
-    if(candidate.getRecordingState()!=AudioRecord.RECORDSTATE_RECORDING){candidate.release();return false;}
-    recorder=candidate;return true;
-   }catch(RuntimeException e){if(candidate!=null)candidate.release();return false;}
-  }
-  @Override public void run(){
-   try{
-    int chosen=0;
-    outer:for(int rate:new int[]{16000,44100,48000}){
-     int min=AudioRecord.getMinBufferSize(rate,AudioFormat.CHANNEL_IN_MONO,AudioFormat.ENCODING_PCM_16BIT);
-     if(min<=0)continue;
-     for(int source:new int[]{MediaRecorder.AudioSource.MIC,MediaRecorder.AudioSource.DEFAULT}){
-      if(!running)return;
-      if(open(source,rate,Math.max(min,rate/5*2))){chosen=rate;break outer;}
-     }
-    }
-    if(chosen==0)throw new IllegalStateException("Android не смог открыть микрофон. Проверьте доступ к микрофону и не занят ли он другим приложением.");
-    runOnUiThread(()->{if(capture==this&&running)js("nativeMicStarted("+session+")");});
-    short[] data=new short[Math.max(320,chosen/25)];
-    long last=0;
-    while(running){
-     int n=recorder.read(data,0,data.length);
-     if(!running)break;
-     if(n<0)throw new IllegalStateException("Ошибка чтения микрофона: "+n);
-     if(n==0){SystemClock.sleep(10);continue;}
-     double sum=0;
-     for(int i=0;i<n;i++){double v=data[i]/32768.0;sum+=v*v;}
-     double rms=Math.sqrt(sum/n);
-     long now=SystemClock.elapsedRealtime();
-     if(now-last>=80){last=now;runOnUiThread(()->{if(capture==this&&running)js("nativeMicLevel("+session+","+rms+")");});}
-    }
-   }catch(RuntimeException e){
-    final String message=e.getMessage()==null?"Ошибка микрофона":e.getMessage();
-    if(running)runOnUiThread(()->{if(capture==this){capture=null;wantMic=false;micError(session,message);}});
-   }finally{
-    synchronized(this){running=false;if(recorder!=null){try{recorder.stop();}catch(IllegalStateException ignored){}recorder.release();recorder=null;}}
-   }
-  }
+ private void startCapture(){
+  if(!wantMic||destroyed)return;stopCapture();final int session=micSession;
+  if(!SpeechRecognizer.isRecognitionAvailable(this)){wantMic=false;micError(session,"Сервис распознавания речи Android недоступен");return;}
+  try{
+   final SpeechRecognizer sr=SpeechRecognizer.createSpeechRecognizer(this);recognizer=sr;
+   sr.setRecognitionListener(new RecognitionListener(){
+    private boolean active(){return recognizer==sr&&wantMic&&!destroyed;}
+    @Override public void onReadyForSpeech(Bundle p){if(active())js("nativeMicStarted("+session+")");}
+    @Override public void onBeginningOfSpeech(){}
+    @Override public void onRmsChanged(float rms){if(active())js("nativeMicLevel("+session+","+Math.max(0,Math.min(1,(rms+2)/40.0))+")");}
+    @Override public void onBufferReceived(byte[] bytes){}
+    @Override public void onEndOfSpeech(){}
+    @Override public void onError(int code){if(active()){wantMic=false;stopCapture();micError(session,"Распознавание речи: ошибка "+code+". Попробуй ещё раз.");}}
+    @Override public void onResults(Bundle result){if(!active())return;ArrayList<String> list=result.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);wantMic=false;stopCapture();if(list==null||list.isEmpty())micError(session,"Не расслышал. Попробуй ещё раз.");else js("nativeRecognized("+session+","+JSONObject.quote(list.get(0))+")");}
+    @Override public void onPartialResults(Bundle p){}
+    @Override public void onEvent(int event,Bundle p){}
+   });
+   Intent intent=new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE,"ru-RU");intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS,1);sr.startListening(intent);
+  }catch(RuntimeException e){wantMic=false;stopCapture();micError(session,"Не удалось запустить распознавание речи");}
  }
  @Override public void onRequestPermissionsResult(int code,String[] permissions,int[] results){
   super.onRequestPermissionsResult(code,permissions,results);
@@ -156,6 +152,6 @@ public class MainActivity extends Activity {
    else{wantMic=false;micError(micSession,"Разрешение на микрофон отклонено");}
   }
  }
- @Override protected void onPause(){super.onPause();if(!waitingPermission){wantMic=false;stopCapture();stopSpeech();js("nativeAudioPaused()");}}
+ @Override protected void onPause(){super.onPause();if(!waitingPermission){gptGeneration++;wantMic=false;stopCapture();stopSpeech();js("nativeAudioPaused()");}}
  @Override protected void onDestroy(){destroyed=true;wantMic=false;stopCapture();if(tts!=null){tts.stop();tts.shutdown();}if(web!=null)web.destroy();super.onDestroy();}
 }
