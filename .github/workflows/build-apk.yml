@@ -5,6 +5,9 @@ on:
     branches: [main]
 permissions:
   contents: write
+concurrency:
+  group: biker-apk-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   apk:
     runs-on: ubuntu-latest
@@ -30,5 +33,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cp app/build/outputs/apk/debug/app-debug.apk BikerVoice.apk
-          gh release view v0.1.0 >/dev/null 2>&1 || gh release create v0.1.0 --title "Biker Voice 0.1.0" --notes "Android avatar demo"
-          gh release upload v0.1.0 BikerVoice.apk --clobber
+          gh release view v0.1.1 >/dev/null 2>&1 || gh release create v0.1.1 --title "BikerVoice 0.1.1" --notes "Character sheet, eight expressions and launcher icon"
+          gh release upload v0.1.1 BikerVoice.apk --clobber
