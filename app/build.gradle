@@ -1,3 +1,32 @@
+import javax.imageio.ImageIO
+import java.awt.image.BufferedImage
+import java.awt.RenderingHints
 plugins { id 'com.android.application' }
-android { namespace 'com.anderza.bikervoice'; compileSdk 35
- defaultConfig { applicationId 'com.anderza.bikervoice'; minSdk 26; targetSdk 34; versionCode 1; versionName '0.1.0' } }
+android {
+ namespace 'com.anderza.bikervoice'
+ compileSdk 35
+ defaultConfig { applicationId 'com.anderza.bikervoice'; minSdk 26; targetSdk 34; versionCode 2; versionName '0.1.1' }
+ sourceSets { main { res.srcDir layout.buildDirectory.dir('generated/bikerIcon') } }
+}
+def iconDir = layout.buildDirectory.dir('generated/bikerIcon')
+def sheetFile = file('src/main/assets/biker.png')
+tasks.register('generateBikerIcon') {
+ inputs.file(sheetFile)
+ outputs.dir(iconDir)
+ doLast {
+  def sheet = ImageIO.read(sheetFile)
+  if (sheet == null) throw new GradleException('Invalid biker.png')
+  def sx = sheet.width / 1536.0
+  def sy = sheet.height / 1024.0
+  def crop = sheet.getSubimage((int)(480*sx), (int)(15*sy), (int)(240*sx), (int)(240*sy))
+  def icon = new BufferedImage(192,192,BufferedImage.TYPE_INT_ARGB)
+  def g = icon.createGraphics()
+  g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC)
+  g.drawImage(crop,0,0,192,192,null)
+  g.dispose()
+  def out = new File(iconDir.get().asFile,'drawable-nodpi/biker_icon.png')
+  out.parentFile.mkdirs()
+  ImageIO.write(icon,'png',out)
+ }
+}
+tasks.named('preBuild').configure { dependsOn tasks.named('generateBikerIcon') }
