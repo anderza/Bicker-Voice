@@ -12,6 +12,10 @@ import android.speech.tts.TextToSpeech;
 import android.speech.tts.UtteranceProgressListener;
 import android.webkit.*;
 import org.json.JSONObject;
+import org.json.JSONArray;
+import android.speech.tts.Voice;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.Locale;
 
 public class MainActivity extends Activity {
@@ -33,11 +37,37 @@ public class MainActivity extends Activity {
   tts=new TextToSpeech(this,status->runOnUiThread(()->{
    if(destroyed||tts==null)return;
    ttsReady=status==TextToSpeech.SUCCESS;
-   if(ttsReady)tts.setLanguage(new Locale("ru","RU"));
+   if(ttsReady){tts.setLanguage(new Locale("ru","RU"));restoreVoice();} sendVoices();
   }));
   web.loadUrl("file:///android_asset/index.html");
  }
+ private void restoreVoice(){
+  String saved=getPreferences(MODE_PRIVATE).getString("voice","");
+  if(tts.getVoices()!=null)for(Voice v:tts.getVoices())if(v.getName().equals(saved)&&v.getLocale().getLanguage().equals("ru")){tts.setVoice(v);break;}
+ }
+ private void sendVoices(){
+  JSONArray list=new JSONArray();
+  if(ttsReady&&tts!=null&&tts.getVoices()!=null){
+   ArrayList<Voice> voices=new ArrayList<>(tts.getVoices());
+   voices.sort(Comparator.comparing(Voice::isNetworkConnectionRequired).thenComparing(Voice::getName));
+   for(Voice v:voices){if(!v.getLocale().getLanguage().equals("ru"))continue;try{
+    JSONObject o=new JSONObject();o.put("id",v.getName());o.put("network",v.isNetworkConnectionRequired());list.put(o);
+   }catch(org.json.JSONException ignored){}}
+  }
+  String selected=ttsReady&&tts!=null&&tts.getVoice()!=null?tts.getVoice().getName():"";
+  js("nativeVoices("+list.toString()+","+JSONObject.quote(selected)+")");
+ }
  public class VoiceBridge {
+  @JavascriptInterface public void listVoices(){runOnUiThread(()->sendVoices());}
+  @JavascriptInterface public void selectVoice(String id){runOnUiThread(()->{
+   if(!ttsReady||tts==null||tts.getVoices()==null)return;
+   for(Voice v:tts.getVoices())if(v.getName().equals(id)&&v.getLocale().getLanguage().equals("ru")){
+    if(tts.setVoice(v)==TextToSpeech.SUCCESS){getPreferences(MODE_PRIVATE).edit().putString("voice",id).apply();sendVoices();}
+    else js("nativeSpeechError('Не удалось выбрать голос')");
+    return;
+   }
+  });}
+
   @JavascriptInterface public void startMic(int session){runOnUiThread(()->{
    if(destroyed)return;
    stopSpeech();stopCapture();micSession=session;wantMic=true;
@@ -51,6 +81,7 @@ public class MainActivity extends Activity {
    final int session=++speechSession;
    tts.setOnUtteranceProgressListener(new UtteranceProgressListener(){
     @Override public void onStart(String id){if(id.equals("biker-"+session))runOnUiThread(()->{if(session==speechSession)js("nativeSpeechStart()");});}
+    @Override public void onRangeStart(String id,int start,int end,int frame){if(id.equals("biker-"+session))runOnUiThread(()->{if(session==speechSession)js("nativeSpeechRange("+start+")");});}
     @Override public void onDone(String id){if(id.equals("biker-"+session))runOnUiThread(()->{if(session==speechSession)js("nativeSpeechEnd()");});}
     @Override public void onError(String id){if(id.equals("biker-"+session))runOnUiThread(()->{if(session==speechSession)js("nativeSpeechError('Ошибка синтеза речи')");});}
    });
@@ -125,6 +156,6 @@ public class MainActivity extends Activity {
    else{wantMic=false;micError(micSession,"Разрешение на микрофон отклонено");}
   }
  }
- @Override protected void onPause(){super.onPause();wantMic=false;stopCapture();stopSpeech();js("nativeAudioPaused()");}
+ @Override protected void onPause(){super.onPause();if(!waitingPermission){wantMic=false;stopCapture();stopSpeech();js("nativeAudioPaused()");}}
  @Override protected void onDestroy(){destroyed=true;wantMic=false;stopCapture();if(tts!=null){tts.stop();tts.shutdown();}if(web!=null)web.destroy();super.onDestroy();}
 }
