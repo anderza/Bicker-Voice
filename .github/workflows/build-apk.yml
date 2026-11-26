@@ -3,6 +3,8 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
+permissions:
+  contents: write
 jobs:
   apk:
     runs-on: ubuntu-latest
@@ -12,12 +14,20 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK packages
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0" "platform-tools"
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
-      - run: gradle :app:assembleDebug --no-daemon
+      - run: gradle :app:assembleDebug --no-daemon --stacktrace
       - uses: actions/upload-artifact@v4
         with:
           name: BikerVoice-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
+      - name: Publish APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk BikerVoice.apk
+          gh release view v0.1.0 >/dev/null 2>&1 || gh release create v0.1.0 --title "Biker Voice 0.1.0" --notes "Android avatar demo"
+          gh release upload v0.1.0 BikerVoice.apk --clobber
